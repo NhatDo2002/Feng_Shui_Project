@@ -4,8 +4,8 @@ namespace Service
 {
     public interface IAuthService
     {
-        Task<AuthResponseDto> LoginAsync(LoginRequestDto request);
-        Task<AuthResponseDto> RegisterAsync(LoginRequestDto request);
-        Task<AuthResponseDto> RefreshTokenAsync(LoginRequestDto request);
+        Task LoginAsync(LoginRequestDto request);
+        Task RegisterAsync(RegisterRequestDto request);
+        Task RefreshTokenAsync(string refreshToken);
     }
 }

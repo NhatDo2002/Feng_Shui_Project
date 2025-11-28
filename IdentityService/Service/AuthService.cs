@@ -1,103 +1,88 @@
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using System.Text;
-using AutoMapper;
-using Data;
 using Dtos;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
+using Exceptions;
+using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Identity;
+using Models;
+using Processors;
+using Repositories;
 
 namespace Service
 {
     public class AuthService : IAuthService
     {
-        private readonly AppDbContext _context;
-        private readonly IConfiguration _configuration;
-        private readonly IMapper _mapper;
+        private readonly IAuthProcessor _authProcessor;
+        private readonly UserManager<User> _userManager;
+        private readonly IUserRepository _userRepository;
 
-        public AuthService(AppDbContext context, IConfiguration configuration, IMapper mapper )
+        public AuthService(IAuthProcessor authProcessor, UserManager<User> userManager, IUserRepository userRepository )
         {
-            _context = context;
-            _configuration = configuration;
-            _mapper = mapper;
+            _authProcessor = authProcessor;
+            _userManager = userManager;
+            _userRepository = userRepository;
         }
-        public async Task<AuthResponseDto> LoginAsync(LoginRequestDto request)
+
+        public async Task LoginAsync(LoginRequestDto request)
         {
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.Username == request.Username);
-            if(user != null)
+            var user = await _userManager.FindByEmailAsync(request.Email);
+            if(user == null || !await _userManager.CheckPasswordAsync(user, request.Password))
             {
-                if (VerifyHashedPassword(request.Password, user.PasswordHash!))
-                {
-                    var token = GenerateJWTToken(request.Username);
-                    return new AuthResponseDto()
-                    {
-                        Success = true,
-                        AccessToken = token,
-                        RefreshToken = token,
-                        User = _mapper.Map<UserReadDto>(user),
-                        Message = "Đăng nhập thành công"
-                    };
-                }
+                throw new LoginFailException();
             }
-            return new AuthResponseDto()
+
+            var (jwtToken, expirationDateInUTC) = _authProcessor.GenerateJWTToken(user);
+            var refreshToken = _authProcessor.GenerateRefreshToken();
+
+            var refreshTokenExpirationDateInUTC = DateTime.UtcNow.AddDays(7);
+            user.RefreshToken = refreshToken;
+            user.RefreshTokenExpiresAtUtc = refreshTokenExpirationDateInUTC;
+
+            await _userManager.UpdateAsync(user);
+
+            _authProcessor.WriteAuthTokenAtHttpOnlyCookie("ACCESS_TOKEN", jwtToken, expirationDateInUTC);
+            _authProcessor.WriteAuthTokenAtHttpOnlyCookie("REFRESH_TOKEN", user.RefreshToken, user.RefreshTokenExpiresAtUtc);
+        }
+
+        public async Task RegisterAsync(RegisterRequestDto request)
+        {
+            if (string.IsNullOrEmpty(request.Name))
             {
-                Success = false,
-                Message = "Tài khoản hoặc mật khấu không đúng"
-            };
-        }
-
-        private bool VerifyHashedPassword(string password, string hashedPassword)
-        {
-            return BCrypt.Net.BCrypt.Verify(password, hashedPassword);
-        }
-
-        private string HashedPassword(string password)
-        {
-            return BCrypt.Net.BCrypt.HashPassword(password);
-        }
-
-        private string GenerateJWTToken(string username)
-        {
-            var jwtSetting = _configuration.GetSection("Jwt");
-            var key = Encoding.UTF8.GetBytes(jwtSetting["Key"]);
-
-            var tokenDescriptor = new SecurityTokenDescriptor
-            {
-                Subject = new ClaimsIdentity(new[]
-                {
-                    new Claim(ClaimTypes.Name, username),
-                    new Claim(ClaimTypes.Role, "Admin")
-                }),
-                Expires = DateTime.UtcNow.AddMinutes(Convert.ToDouble(jwtSetting["DurationInMinutes"])),
-                Issuer = jwtSetting["Issuer"],
-                Audience = jwtSetting["Audience"],
-                SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
-            };
-
-            var tokenHandler = new JwtSecurityTokenHandler();
-            var token = tokenHandler.CreateToken(tokenDescriptor);
-
-            return tokenHandler.WriteToken(token);
-        }
-
-        public Task<AuthResponseDto> RefreshTokenAsync(LoginRequestDto request)
-        {
-            throw new NotImplementedException();
-        }
-
-        public async Task<AuthResponseDto> RegisterAsync(UserCreateDto request)
-        {
-            var checkUser = await _context.Users.AnyAsync(u => u.Username == request.Username);
-            if (checkUser)
-            {
-                return new AuthResponseDto()
-                {
-                    Success = false,
-                    Message = "Tên tài khoản đã tồn tại. Vui lòng nhập tên khác"
-                };
+                throw new EmptyNameException();
             }
-            var newUser = _mapper.Map<>
-            throw new NotImplementedException();
+            if (string.IsNullOrEmpty(request.Email))
+            {
+                throw new EmptyEmailException();
+            }
+        
+            var userExists = await _userManager.FindByEmailAsync(request.Email) != null;
+            if (userExists)
+            {
+                throw new UserAlreadyExistException(request.Email);
+            }
+            var user = User.Create(request.Email, request.Name);
+            user.PasswordHash = _userManager.PasswordHasher.HashPassword(user, request.Password);
+
+            var result = await _userManager.CreateAsync(user);
+            if (!result.Succeeded)
+            {
+                throw new RegistrationFailException(result.Errors.Select(x => x.Description));
+            }
+        }
+
+        public async Task RefreshTokenAsync(string refreshToken)
+        {
+            if (string.IsNullOrEmpty(refreshToken))
+            {
+                throw new RefreshTokenException("Refresh token bị trống");
+            }
+            var user = await _userRepository.GetUserByRefreshToken(refreshToken);
+            if(user == null)
+            {
+                throw new RefreshTokenException("Không thể lấy được refresh token của người dùng");
+            }
+            if(user.RefreshTokenExpiresAtUtc < DateTime.UtcNow)
+            {
+                throw new RefreshTokenException("Refresh token của người dùng đã hết hạn");
+            }
         }
     }
 }

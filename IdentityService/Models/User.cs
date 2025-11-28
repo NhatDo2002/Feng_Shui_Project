@@ -1,33 +1,22 @@
 using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Identity;
 
 namespace Models
 {
-    public class User
+    public class User : IdentityUser<Guid>
     {
-        [Key]
-        [Required]
-        public Guid Id { get; set; }
-
-        [Required]
-        public string? Username { get; set; }
-
-        [Required]
-        public string? PasswordHash { get; set; }
-
         [Required]
         public string? Name { get; set; }
-
-        [Required]
-        public string? Email { get; set; }
-
-        [Required]
-        public string? Phone { get; set; }
-
-        public DateOnly DateOfBirth { get; set; }
-
-        public bool Status { get; set; }
-        public DateTime? CreateAt { get; set; }
-        public DateTime? UpdateAt { get; set; }
-        
+        public string? RefreshToken {get; set;}
+        public DateTime? RefreshTokenExpiresAtUtc {get; set;}
+        public static User Create(string email, string name)
+        {
+            return new User
+            {
+                UserName = email,
+                Email = email,
+                Name = name,
+            };
+        }
     }
 }
